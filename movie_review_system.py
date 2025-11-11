@@ -2,54 +2,52 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import altair as alt
-import os
-
-DB_PATH = os.path.join(os.path.dirname(__file__), "movie_review.db")
+from streamlit_player import st_player
 
 # ---------------------------
 # DATABASE SETUP
 # ---------------------------
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+conn = sqlite3.connect('movie_review.db', check_same_thread=False)
 c = conn.cursor()
 
-# Create necessary tables
-c.execute('''
-CREATE TABLE IF NOT EXISTS users (
+# Create tables if not exist
+c.execute('''CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE,
     password TEXT
-)
-''')
+)''')
 
-c.execute('''
-CREATE TABLE IF NOT EXISTS movies (
+c.execute('''CREATE TABLE IF NOT EXISTS movies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT,
     duration INTEGER,
     description TEXT,
     url TEXT
-)
-''')
+)''')
 
-c.execute('''
-CREATE TABLE IF NOT EXISTS views (
+c.execute('''CREATE TABLE IF NOT EXISTS views (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     movie_id INTEGER,
     timestamp TEXT,
     action TEXT
-)
-''')
+)''')
 
-c.execute('''
-CREATE TABLE IF NOT EXISTS reviews (
+c.execute('''CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     movie_id INTEGER,
     rating INTEGER,
     comment TEXT
-)
-''')
+)''')
+
+# For smart analytics
+c.execute('''CREATE TABLE IF NOT EXISTS smart_watch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    movie_id INTEGER,
+    timestamp REAL,
+    event TEXT
+)''')
 conn.commit()
 
 # ---------------------------
@@ -60,16 +58,16 @@ def add_user(username, password):
         c.execute('INSERT INTO users (username, password) VALUES (?,?)', (username, password))
         conn.commit()
         return True
-    except Exception as e:
+    except:
         return False
 
 def login_user(username, password):
     c.execute('SELECT * FROM users WHERE username=? AND password=?', (username, password))
-    data = c.fetchone()
-    return data
+    return c.fetchone()
 
 def add_movie(title, duration, description, url):
-    c.execute('INSERT INTO movies (title, duration, description, url) VALUES (?,?,?,?)', (title, duration, description, url))
+    c.execute('INSERT INTO movies (title, duration, description, url) VALUES (?,?,?,?)',
+              (title, duration, description, url))
     conn.commit()
 
 def log_view(user_id, movie_id, timestamp, action):
@@ -85,196 +83,181 @@ def add_review(user_id, movie_id, rating, comment):
 # ---------------------------
 # STREAMLIT APP
 # ---------------------------
-st.set_page_config(page_title="Movie Review Engagement Tracker", layout="wide")
+st.set_page_config(page_title="Movie Review & Smart Analytics", layout="wide")
 st.title("🎬 Movie Review & Engagement Tracker")
 
 if 'user' not in st.session_state:
     st.session_state['user'] = None
 
-menu = ["Signup", "Login", "Admin - Add Movie", "Watch Movie", "Analytics", "Add Review", "Help"]
+menu = [
+    "Signup", "Login", "Admin - Add Movie",
+    "Watch Movie", "Add Review", "Analytics",
+    "Smart Analytics (Auto Detection)", "Help"
+]
 choice = st.sidebar.selectbox("Menu", menu)
 
 # ---------------------------
 # SIGNUP
 # ---------------------------
 if choice == "Signup":
-    st.subheader("Create a New Account")
-    new_user = st.text_input("Username")
-    new_pass = st.text_input("Password", type="password")
-
-    if st.button("Signup"):
-        if new_user.strip() == "" or new_pass.strip() == "":
-            st.error("Please provide username and password.")
-        elif add_user(new_user, new_pass):
-            st.success("✅ Account created successfully! Please login from the Login menu.")
+    st.subheader("🧑‍💻 Create Account")
+    user = st.text_input("Username")
+    pw = st.text_input("Password", type="password")
+    if st.button("Sign Up"):
+        if add_user(user, pw):
+            st.success("✅ Account created successfully! Please log in.")
         else:
-            st.error("Username already exists or invalid.")
+            st.error("Username already exists!")
 
 # ---------------------------
 # LOGIN
 # ---------------------------
 elif choice == "Login":
-    st.subheader("Login to your account")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-
+    st.subheader("🔐 Login")
+    user = st.text_input("Username")
+    pw = st.text_input("Password", type="password")
     if st.button("Login"):
-        user = login_user(username, password)
-        if user:
-            st.session_state['user'] = {"id": user[0], "username": user[1]}
-            st.success(f"Welcome {username}!")
+        data = login_user(user, pw)
+        if data:
+            st.session_state['user'] = {"id": data[0], "username": data[1]}
+            st.success(f"Welcome, {user}!")
         else:
-            st.error("Invalid login credentials.")
+            st.error("Invalid credentials.")
 
 # ---------------------------
 # ADMIN - ADD MOVIE
 # ---------------------------
 elif choice == "Admin - Add Movie":
-    st.subheader("🎞️ Add New Movie (Admin)")
-    st.info("This 'Admin' page is not access-protected in this demo. In production, add role checks.")
+    st.subheader("🎞️ Add New Movie (Admin Only)")
     title = st.text_input("Movie Title")
-    duration = st.number_input("Duration (in minutes)", 1, 10000, value=120)
+    duration = st.number_input("Duration (in minutes)", 1, 500)
     desc = st.text_area("Description")
-    url = st.text_input("Video URL (mp4 link) — you can use public mp4 links or a CDN URL")
+    url = st.text_input("Video URL (MP4 or YouTube link)")
 
     if st.button("Add Movie"):
-        if title.strip() == "" or url.strip() == "":
-            st.error("Title and URL are required.")
-        else:
-            add_movie(title, duration, desc, url)
-            st.success(f"Movie '{title}' added successfully!")
+        add_movie(title, duration, desc, url)
+        st.success(f"✅ '{title}' added successfully!")
 
 # ---------------------------
 # WATCH MOVIE
 # ---------------------------
 elif choice == "Watch Movie":
     st.subheader("🎥 Watch Movie")
-    movies = pd.read_sql_query("SELECT * FROM movies", conn)
-
-    if len(movies) == 0:
-        st.info("No movies available yet. Add one in 'Admin - Add Movie'.")
+    df = pd.read_sql_query("SELECT * FROM movies", conn)
+    if df.empty:
+        st.warning("No movies available. Add some in 'Admin - Add Movie'.")
     else:
-        movie_name = st.selectbox("Select Movie", movies['title'])
-        movie = movies[movies['title'] == movie_name].iloc[0]
+        name = st.selectbox("Select Movie", df['title'])
+        movie = df[df['title'] == name].iloc[0]
 
-        # show video using st.video
-        if movie['url'].strip() != "":
-            st.video(movie['url'])
-        else:
-            st.warning("No video url for this movie.")
-
+        st.video(movie['url'])
         st.write(f"**Description:** {movie['description']}")
-        st.write(f"⏱️ Duration: {movie['duration']} mins")
+        st.write(f"⏱️ Duration: {movie['duration']} minutes")
 
-        st.markdown("---")
-        st.markdown("### Simulated tracking (for demo)")
-        st.write("Since Streamlit's native `st.video` doesn't expose playback events, this demo provides buttons to simulate user actions (play, pause, skip). Later you can extend with a Streamlit component that captures JS player events.")
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("Simulate: play at 00:02:30"):
-                if st.session_state['user'] is None:
-                    st.warning("Please login (or we will record as anonymous user id=0).")
-                uid = st.session_state['user']['id'] if st.session_state['user'] else 0
-                log_view(uid, int(movie['id']), '00:02:30', 'play')
-                st.success("Logged play event.")
-        with col2:
-            if st.button("Simulate: skip at 00:10:15"):
-                uid = st.session_state['user']['id'] if st.session_state['user'] else 0
-                log_view(uid, int(movie['id']), '00:10:15', 'skip')
-                st.success("Logged skip event.")
-        with col3:
-            if st.button("Simulate: play at 00:20:45"):
-                uid = st.session_state['user']['id'] if st.session_state['user'] else 0
-                log_view(uid, int(movie['id']), '00:20:45', 'play')
-                st.success("Logged play event.")
-
-        st.markdown("---")
-        if st.checkbox("Show raw view events for this movie"):
-            df_movie_views = pd.read_sql_query(f"SELECT * FROM views WHERE movie_id={int(movie['id'])}", conn)
-            st.dataframe(df_movie_views)
+        # Simulate playback logs (for demo)
+        if st.button("Simulate Watch Events"):
+            uid = st.session_state['user']['id'] if st.session_state['user'] else 0
+            log_view(uid, int(movie['id']), "00:03:00", "play")
+            log_view(uid, int(movie['id']), "00:10:15", "skip")
+            log_view(uid, int(movie['id']), "00:20:45", "play")
+            st.success("✅ Simulated watching data saved!")
 
 # ---------------------------
 # ADD REVIEW
 # ---------------------------
 elif choice == "Add Review":
-    st.subheader("📝 Add Review")
-    movies = pd.read_sql_query("SELECT * FROM movies", conn)
-    if len(movies) == 0:
-        st.warning("No movies to review.")
+    st.subheader("📝 Add Movie Review")
+    df = pd.read_sql_query("SELECT * FROM movies", conn)
+    if df.empty:
+        st.info("No movies yet.")
     else:
-        movie_name = st.selectbox("Select Movie", movies['title'])
-        rating = st.slider("Rate (1–5)", 1, 5, 4)
-        comment = st.text_area("Your Comment")
+        name = st.selectbox("Select Movie", df['title'])
+        rating = st.slider("Rate (1–5)", 1, 5)
+        comment = st.text_area("Write your review")
 
-        if st.button("Submit Review"):
+        if st.button("Submit"):
             uid = st.session_state['user']['id'] if st.session_state['user'] else 0
-            movie_id = int(movies[movies['title'] == movie_name].iloc[0]['id'])
-            add_review(uid, movie_id, rating, comment)
-            st.success("Thank you for your review! 🎉")
+            mid = int(df[df['title'] == name].iloc[0]['id'])
+            add_review(uid, mid, rating, comment)
+            st.success("✅ Review added successfully!")
 
 # ---------------------------
 # ANALYTICS
 # ---------------------------
 elif choice == "Analytics":
     st.subheader("📊 Engagement Analytics")
-
-    df_views = pd.read_sql_query("SELECT * FROM views", conn)
-    df_reviews = pd.read_sql_query("SELECT * FROM reviews", conn)
-    movies_df = pd.read_sql_query("SELECT * FROM movies", conn)
-
-    if df_views.empty:
-        st.info("No view data yet. Use 'Watch Movie' to simulate events.")
-    else:
-        st.markdown("### 🔥 Watch vs Skip by Timestamp")
-        # Aggregate counts by timestamp and action
-        agg = df_views.groupby(['timestamp','action']).size().reset_index(name='count')
-        chart = alt.Chart(agg).mark_bar().encode(
-            x='timestamp:N',
-            y='count:Q',
-            color='action:N',
-            tooltip=['timestamp','action','count']
+    views = pd.read_sql_query("SELECT * FROM views", conn)
+    reviews = pd.read_sql_query("SELECT * FROM reviews", conn)
+    if not views.empty:
+        chart = alt.Chart(views).mark_bar().encode(
+            x='timestamp', y='count():Q', color='action'
         )
         st.altair_chart(chart, use_container_width=True)
-
-        st.markdown("### Heatmap-like summary (timestamps intensity)")
-        heat = df_views.groupby('timestamp').size().reset_index(name='views')
-        heat_chart = alt.Chart(heat).mark_rect().encode(
-            x='timestamp:N',
-            y=alt.Y('views:Q', axis=alt.Axis(title='views')),
-            tooltip=['timestamp','views']
-        )
-        st.altair_chart(heat_chart, use_container_width=True)
-
-    if df_reviews.empty:
-        st.info("No reviews yet.")
     else:
-        st.markdown("### ⭐ Average Ratings by Movie")
-        avg = df_reviews.groupby('movie_id')['rating'].mean().reset_index()
-        # join title
-        avg = avg.merge(movies_df[['id','title']], left_on='movie_id', right_on='id', how='left')
-        avg_chart = alt.Chart(avg).mark_bar().encode(
-            x='title:N',
-            y='rating:Q',
-            tooltip=['title','rating']
-        )
-        st.altair_chart(avg_chart, use_container_width=True)
+        st.info("No engagement data yet.")
+    if not reviews.empty:
+        avg = reviews.groupby('movie_id')['rating'].mean().reset_index()
+        st.bar_chart(avg.set_index('movie_id'))
+    else:
+        st.info("No reviews yet.")
 
-        st.markdown("### Latest Reviews")
-        latest = df_reviews.sort_values('id', ascending=False).head(20)
-        latest = latest.merge(movies_df[['id','title']], left_on='movie_id', right_on='id', how='left')
-        st.dataframe(latest[['title','rating','comment']])
+# ---------------------------
+# SMART ANALYTICS (AUTO DETECTION)
+# ---------------------------
+elif choice == "Smart Analytics (Auto Detection)":
+    st.subheader("🤖 Smart Engagement Detection (Automatic)")
+    df = pd.read_sql_query("SELECT * FROM movies", conn)
+    if df.empty:
+        st.warning("No movies found. Add one first.")
+    else:
+        name = st.selectbox("Select Movie", df['title'])
+        movie = df[df['title'] == name].iloc[0]
+
+        st.write(f"**Now playing:** {movie['title']}")
+        events = st_player(
+            movie['url'],
+            key=f"player_{movie['id']}",
+            events=["onProgress", "onPlay", "onPause"],
+            height=400
+        )
+
+        # Log playback data automatically
+        if events and "time" in events:
+            current_time = round(events["time"], 1)
+            c.execute("INSERT INTO smart_watch (movie_id, timestamp, event) VALUES (?,?,?)",
+                      (int(movie['id']), current_time, "play"))
+            conn.commit()
+
+        st.markdown("---")
+        st.markdown("### 🔥 Scene Engagement Heatmap")
+
+        data = pd.read_sql_query(f"SELECT * FROM smart_watch WHERE movie_id={int(movie['id'])}", conn)
+        if not data.empty:
+            data["segment"] = (data["timestamp"] // 10) * 10
+            summary = data.groupby("segment").size().reset_index(name="views")
+
+            chart = alt.Chart(summary).mark_bar().encode(
+                x=alt.X("segment:Q", title="Scene (seconds)"),
+                y=alt.Y("views:Q", title="Views"),
+                tooltip=["segment", "views"]
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+            top_scene = summary.loc[summary['views'].idxmax()]
+            st.success(f"🔥 Most watched scene: {top_scene.segment:.0f}s – {top_scene.segment + 10:.0f}s")
+        else:
+            st.info("Start watching to generate analytics data!")
 
 # ---------------------------
 # HELP
 # ---------------------------
 elif choice == "Help":
-    st.subheader("How to use this project")
+    st.subheader("ℹ️ Help & Instructions")
     st.markdown("""
-    1. Go to **Admin - Add Movie** and add a movie (use a public MP4 url for demo).
-    2. Signup / Login (optional). The demo records anonymous events as user id 0.
-    3. Go to **Watch Movie** and use the simulate buttons to log play/skip events.
-    4. Go to **Analytics** to view aggregated events and reviews.
-    5. To deploy on Streamlit Cloud / Streamlit Community Cloud, push this repo (including this file) to GitHub and connect it in your Streamlit account.
+    **How to use:**
+    1. Go to *Admin - Add Movie* and add some movie URLs (like public MP4 or YouTube links).  
+    2. Sign up and log in as a user.  
+    3. Use *Watch Movie* or *Smart Analytics (Auto Detection)* to track engagement.  
+    4. Go to *Analytics* to view graphs and insights.  
+    5. The *Smart Analytics* section auto-detects which scenes are most viewed and highlights them.
     """)
-    st.markdown("""> Note: For production-grade playback tracking you will need a JS-based player component that sends playback events to the Python backend. This demo uses manual simulation buttons to keep everything purely Python/Streamlit-based.""", unsafe_allow_html=True)
